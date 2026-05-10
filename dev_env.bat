@@ -52,15 +52,16 @@ if (!(Test-Path $base)) { New-Item -ItemType Directory -Path $base | Out-Null }
 if (!(Test-Path $tempCache)) { New-Item -ItemType Directory -Path $tempCache | Out-Null }
 
 $v = @{
-    Java    = "21.0.5"
-    Node    = "20.18.0";   Python = "3.12.4";
-    Maven   = "3.9.9";     Git    = "2.48.1";
-    TGit    = "2.15.0.0";  Android = "11076708"
+    Java8   = "8";          Java17 = "17"
+    Node    = "20.18.0";    Python = "3.12.4";
+    Maven   = "3.9.9";      Git    = "2.48.1";
+    TGit    = "2.15.0.0";   Android = "11076708"
 }
 
 # Path Definitions: Name\Version
 $paths = @{
-    Java    = "$base\java\$($v.Java)"
+    Java8   = "$base\java\jdk-8"
+    Java17  = "$base\java\jdk-17"
     Node    = "$base\nodejs\$($v.Node)"
     Python  = "$base\python\$($v.Python)"
     Maven   = "$base\maven\$($v.Maven)"
@@ -70,7 +71,7 @@ $paths = @{
 }
 
 $urls = @{
-    Java    = "https://download.oracle.com/java/21/archive/jdk-$($v.Java)_windows-x64_bin.zip"
+    JavaBase = "https://raw.githubusercontent.com/fuck18cm/DevEnvWin11/main/pkg"
     Node    = "https://nodejs.org/dist/v$($v.Node)/node-v$($v.Node)-x64.msi"
     Python  = "https://www.python.org/ftp/python/$($v.Python)/python-$($v.Python)-amd64.exe"
     Maven   = "https://archive.apache.org/dist/maven/maven-3/$($v.Maven)/binaries/apache-maven-$($v.Maven)-bin.zip"
@@ -125,21 +126,83 @@ function Download-Official($url, $file, $referer = $null) {
     return $target
 }
 
+function Merge-SplitFiles($parts, $outPath) {
+    $out = [System.IO.File]::Create($outPath)
+    try {
+        foreach ($p in $parts) {
+            $in = [System.IO.File]::OpenRead($p)
+            try { $in.CopyTo($out) } finally { $in.Close() }
+        }
+    } finally { $out.Close() }
+}
+
 # --- Task Functions ---
 
 $TaskJava = {
-    Write-Host "`n>> Oracle JDK $($v.Java)" -ForegroundColor Cyan
-    if (Test-CommandAvailable "java") { Write-Host "  [Skip] Java already in system." -ForegroundColor Yellow; return }
+    Write-Host "`n>> Java JDK 8 + 17 (split parts from GitHub)" -ForegroundColor Cyan
 
-    if (!(Test-Path $paths.Java)) {
-        $f = Download-Official $urls.Java "jdk.zip"
-        Expand-Archive $f -DestinationPath "$tempCache\jdk" -Force
-        $inner = Get-ChildItem "$tempCache\jdk" -Directory | Select-Object -First 1
-        New-Item -ItemType Directory -Path (Split-Path $paths.Java) -Force | Out-Null
-        Move-Item $inner.FullName $paths.Java -Force
+    $jdks = @(
+        [pscustomobject]@{ Name = "JDK 8";  Dir = $paths.Java8;  Prefix = "jdk-8.zip"  },
+        [pscustomobject]@{ Name = "JDK 17"; Dir = $paths.Java17; Prefix = "jdk-17.zip" }
+    )
+
+    foreach ($j in $jdks) {
+        if (Test-Path "$($j.Dir)\bin\java.exe") {
+            Write-Host "  [Skip] $($j.Name) already at $($j.Dir)" -ForegroundColor Yellow
+            continue
+        }
+        Write-Host "  [JDK] Preparing $($j.Name) ..." -ForegroundColor White
+
+        # Download sha256 manifest
+        $shaFile = Download-Official "$($urls.JavaBase)/$($j.Prefix).sha256" "$($j.Prefix).sha256"
+        $shaLine = ((Get-Content $shaFile) | Select-Object -First 1).Trim()
+        if (-not $shaLine) { throw "Empty sha256 manifest for $($j.Prefix)" }
+        $expected = ($shaLine -split '\s+')[0].ToUpper()
+
+        # Download all 4 split parts
+        $parts = @()
+        for ($i = 1; $i -le 4; $i++) {
+            $partName = "{0}.{1:D3}" -f $j.Prefix, $i
+            $partPath = Download-Official "$($urls.JavaBase)/$partName" $partName
+            $parts += $partPath
+        }
+
+        # Merge split parts into one zip
+        $merged = Join-Path $tempCache $j.Prefix
+        if (Test-Path $merged) { Remove-Item $merged -Force }
+        Merge-SplitFiles $parts $merged
+
+        # Verify SHA256 - on mismatch, clear cache and abort so re-run can recover
+        $actual = (Get-FileHash $merged -Algorithm SHA256).Hash.ToUpper()
+        if ($actual -ne $expected) {
+            foreach ($p in $parts) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+            Remove-Item $merged  -Force -ErrorAction SilentlyContinue
+            Remove-Item $shaFile -Force -ErrorAction SilentlyContinue
+            throw "SHA256 mismatch for $($j.Prefix). Expected $expected got $actual. Cache cleared - please re-run."
+        }
+        Write-Host "  [Verify] $($j.Prefix) SHA256 OK" -ForegroundColor Green
+
+        # Extract
+        $extractDir = Join-Path $tempCache "$($j.Prefix)_extract"
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+        Expand-Archive $merged -DestinationPath $extractDir -Force
+
+        New-Item -ItemType Directory -Path (Split-Path $j.Dir) -Force | Out-Null
+        $inner = Get-ChildItem $extractDir -Directory | Select-Object -First 1
+        if ($inner -and -not (Test-Path "$extractDir\bin\java.exe")) {
+            Move-Item $inner.FullName $j.Dir -Force
+        } else {
+            Move-Item $extractDir $j.Dir -Force
+        }
+        Write-Host "  [Install] $($j.Name) -> $($j.Dir)" -ForegroundColor Green
     }
-    Set-EnvVar "JAVA_HOME" $paths.Java
-    Add-PathVar "%JAVA_HOME%\bin" "$($paths.Java)\bin"
+
+    # Default JAVA_HOME = JDK 8 (use switch_jdk.bat to switch later)
+    Set-EnvVar "JAVA_HOME"   $paths.Java8
+    Set-EnvVar "JAVA8_HOME"  $paths.Java8
+    Set-EnvVar "JAVA17_HOME" $paths.Java17
+    Add-PathVar "%JAVA_HOME%\bin" "$($paths.Java8)\bin"
+    Write-Host "  [Active] JAVA_HOME -> $($paths.Java8) (default JDK 8)" -ForegroundColor Green
 }
 
 $TaskNode = {
@@ -239,8 +302,10 @@ $TaskAndroid = {
 
     # sdkmanager requires Java on PATH for the current process
     if (-not (Test-CommandAvailable "java")) {
-        if (Test-Path "$($paths.Java)\bin\java.exe") {
-            $env:Path = "$($paths.Java)\bin;$env:Path"
+        if (Test-Path "$($paths.Java8)\bin\java.exe") {
+            $env:Path = "$($paths.Java8)\bin;$env:Path"
+        } elseif (Test-Path "$($paths.Java17)\bin\java.exe") {
+            $env:Path = "$($paths.Java17)\bin;$env:Path"
         } else {
             throw "Java not found. Install Java (option 1) first, then re-run option 6."
         }
@@ -262,7 +327,7 @@ Clear-Host
 Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host "      Smart Dev Environment Installer" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
-Write-Host " 1. Java | 2. Node | 3. Python | 4. Maven | 5. Git | 6. Android | all. All"
+Write-Host " 1. Java(8+17) | 2. Node | 3. Python | 4. Maven | 5. Git | 6. Android | all. All"
 $choice = Read-Host "`nChoice"
 if ($choice -eq "") { exit }
 
