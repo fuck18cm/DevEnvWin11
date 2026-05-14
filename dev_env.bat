@@ -306,15 +306,18 @@ $TaskPython = {
 
 $TaskMaven = {
     Write-Host "`n>> Maven" -ForegroundColor Cyan
-    if (Test-CommandAvailable "mvn") { Write-Host "  [Skip] Maven already in system." -ForegroundColor Yellow; return }
 
-    if (!(Test-Path $paths.Maven)) {
-        $f = Download-Official $urls.Maven "mvn.zip"
+    if (!(Test-Path "$($paths.Maven)\bin\mvn.cmd")) {
+        $f = Download-Official $urls.Maven "mvn-$($v.Maven).zip"
         Expand-Archive $f -DestinationPath "$tempCache\mvn" -Force
         $inner = Get-ChildItem "$tempCache\mvn" -Directory | Select-Object -First 1
         New-Item -ItemType Directory -Path (Split-Path $paths.Maven) -Force | Out-Null
         Move-Item $inner.FullName $paths.Maven -Force
+        if (!(Test-Path "$($paths.Maven)\bin\mvn.cmd")) { throw "Maven install failed at $($paths.Maven)" }
+    } else {
+        Write-Host "  [Skip] Maven $($v.Maven) already at $($paths.Maven)" -ForegroundColor Yellow
     }
+
     Set-EnvVar "M2_HOME" $paths.Maven
     Set-EnvVar "MAVEN_OPTS" "-Xms256m -Xmx512m -Dfile.encoding=UTF-8"
     Add-PathVar "%M2_HOME%\bin" "$($paths.Maven)\bin"
