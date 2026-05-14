@@ -289,12 +289,16 @@ $TaskNode = {
 
 $TaskPython = {
     Write-Host "`n>> Python" -ForegroundColor Cyan
-    if (Test-CommandAvailable "python") { Write-Host "  [Skip] Python already in system." -ForegroundColor Yellow; return }
 
-    if (!(Test-Path $paths.Python)) {
-        $f = Download-Official $urls.Python "python.exe"
+    if (!(Test-Path "$($paths.Python)\python.exe")) {
+        $f = Download-Official $urls.Python "python-$($v.Python).exe"
         Start-Process $f -ArgumentList "/quiet InstallAllUsers=1 PrependPath=0 TargetDir=`"$($paths.Python)`"" -Wait
+        if (!(Test-Path "$($paths.Python)\python.exe")) { throw "Python install failed at $($paths.Python)" }
+    } else {
+        Write-Host "  [Skip] Python $($v.Python) already at $($paths.Python)" -ForegroundColor Yellow
     }
+
+    # Env vars + PATH re-applied every run so a partial previous install can self-heal
     Set-EnvVar "PYTHON_HOME" $paths.Python
     Add-PathVar "%PYTHON_HOME%" $paths.Python
     Add-PathVar "%PYTHON_HOME%\Scripts" "$($paths.Python)\Scripts"
