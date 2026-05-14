@@ -52,17 +52,19 @@ if (!(Test-Path $base)) { New-Item -ItemType Directory -Path $base | Out-Null }
 if (!(Test-Path $tempCache)) { New-Item -ItemType Directory -Path $tempCache | Out-Null }
 
 $v = @{
-    Java8   = "8";          Java17 = "17"
-    Node    = "20.18.0";    Python = "3.12.4";
-    Maven   = "3.9.9";      Git    = "2.48.1";
-    TGit    = "2.15.0.0";   Android = "11076708"
+    Java8   = "8";          Java17  = "17"
+    Nvm     = "1.1.12";     Node    = "18.18.0"
+    Python  = "3.12.4";     Maven   = "3.9.9"
+    Git     = "2.48.1";     TGit    = "2.15.0.0"
+    Android = "11076708"
 }
 
 # Path Definitions: Name\Version
 $paths = @{
     Java8   = "$base\java\jdk-8"
     Java17  = "$base\java\jdk-17"
-    Node    = "$base\nodejs\$($v.Node)"
+    Nvm     = "$base\nvm"
+    NodeSym = "$base\nodejs"
     Python  = "$base\python\$($v.Python)"
     Maven   = "$base\maven\$($v.Maven)"
     Git     = "$base\git\$($v.Git)"
@@ -72,7 +74,7 @@ $paths = @{
 
 $urls = @{
     JavaBase = "https://raw.githubusercontent.com/fuck18cm/DevEnvWin11/main/pkg"
-    Node    = "https://nodejs.org/dist/v$($v.Node)/node-v$($v.Node)-x64.msi"
+    Nvm     = "https://github.com/coreybutler/nvm-windows/releases/download/$($v.Nvm)/nvm-setup.zip"
     Python  = "https://www.python.org/ftp/python/$($v.Python)/python-$($v.Python)-amd64.exe"
     Maven   = "https://archive.apache.org/dist/maven/maven-3/$($v.Maven)/binaries/apache-maven-$($v.Maven)-bin.zip"
     Git     = "https://github.com/git-for-windows/git/releases/download/v$($v.Git).windows.1/Git-$($v.Git)-64-bit.exe"
