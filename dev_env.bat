@@ -325,14 +325,15 @@ $TaskMaven = {
 
 $TaskGit = {
     Write-Host "`n>> Git & TortoiseGit" -ForegroundColor Cyan
-    if (Test-CommandAvailable "git") { Write-Host "  [Skip] Git already works." -ForegroundColor Yellow }
-    else {
-        if (!(Test-Path $paths.Git)) {
-            $f = Download-Official $urls.Git "git.exe"
-            Start-Process $f -ArgumentList "/VERYSILENT /NORESTART /DIR=`"$($paths.Git)`"" -Wait
-        }
-        Add-PathVar "$($paths.Git)\bin" "$($paths.Git)\bin"
+
+    if (!(Test-Path "$($paths.Git)\bin\git.exe")) {
+        $f = Download-Official $urls.Git "git-$($v.Git).exe"
+        Start-Process $f -ArgumentList "/VERYSILENT /NORESTART /DIR=`"$($paths.Git)`"" -Wait
+        if (!(Test-Path "$($paths.Git)\bin\git.exe")) { throw "Git install failed at $($paths.Git)" }
+    } else {
+        Write-Host "  [Skip] Git $($v.Git) already at $($paths.Git)" -ForegroundColor Yellow
     }
+    Add-PathVar "$($paths.Git)\bin" "$($paths.Git)\bin"
 
     if (!(Test-Path $paths.TGit)) {
         $f = Download-Official $urls.TGit "tgit.msi" "https://tortoisegit.org/download/"
