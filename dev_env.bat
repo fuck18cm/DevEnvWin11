@@ -219,15 +219,72 @@ $TaskJava = {
 }
 
 $TaskNode = {
-    Write-Host "`n>> Node.js" -ForegroundColor Cyan
-    if (Test-CommandAvailable "node") { Write-Host "  [Skip] Node already in system." -ForegroundColor Yellow; return }
-    
-    if (!(Test-Path $paths.Node)) {
-        $f = Download-Official $urls.Node "node.msi"
-        Start-Process msiexec.exe -ArgumentList "/i `"$f`" /quiet /norestart INSTALLDIR=`"$($paths.Node)`"" -Wait
+    Write-Host "`n>> Node.js (via nvm-windows)" -ForegroundColor Cyan
+
+    # Pre-flight: if D:\dev_env\nodejs is a regular dir (old layout), back it up
+    if (Test-Path $paths.NodeSym) {
+        $item = Get-Item $paths.NodeSym -Force
+        if ($null -eq $item.LinkType) {
+            $bak = "$($paths.NodeSym).bak"
+            if (Test-Path $bak) {
+                $bak = "$bak.$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+            }
+            Write-Host "  [Backup] $($paths.NodeSym) -> $bak (old layout detected)" -ForegroundColor Yellow
+            Move-Item $paths.NodeSym $bak -Force
+        }
     }
-    Set-EnvVar "NODE_HOME" $paths.Node
-    Add-PathVar "%NODE_HOME%" $paths.Node
+
+    # Install nvm-windows if not already there
+    if (!(Test-Path "$($paths.Nvm)\nvm.exe")) {
+        $zip = Download-Official $urls.Nvm "nvm-setup-$($v.Nvm).zip"
+        $extractDir = Join-Path $tempCache "nvm-setup-extract"
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+        Expand-Archive $zip -DestinationPath $extractDir -Force
+        $setupExe = Join-Path $extractDir "nvm-setup.exe"
+        if (!(Test-Path $setupExe)) { throw "nvm-setup.exe not found after extracting $zip" }
+
+        Write-Host "  [Install] nvm-windows $($v.Nvm) -> $($paths.Nvm)" -ForegroundColor White
+        Start-Process $setupExe -ArgumentList "/SILENT","/SUPPRESSMSGBOXES","/DIR=`"$($paths.Nvm)`"" -Wait
+
+        if (!(Test-Path "$($paths.Nvm)\nvm.exe")) {
+            throw "nvm install failed: $($paths.Nvm)\nvm.exe not found. The /DIR= flag may not be honored; switch to nvm-noinstall.zip."
+        }
+    } else {
+        Write-Host "  [Skip] nvm-windows already at $($paths.Nvm)" -ForegroundColor Yellow
+    }
+
+    # Force settings.txt to our chosen paths (overrides whatever installer wrote)
+    $settingsPath = Join-Path $paths.Nvm "settings.txt"
+    $settingsContent = "root: $($paths.Nvm)`r`npath: $($paths.NodeSym)`r`n"
+    Set-Content -Path $settingsPath -Value $settingsContent -Encoding ASCII
+    Write-Host "  [Config] $settingsPath updated" -ForegroundColor Green
+
+    # Remove env vars / PATH entries from the old MSI-based layout
+    if ([System.Environment]::GetEnvironmentVariable("NODE_HOME", "Machine")) {
+        [System.Environment]::SetEnvironmentVariable("NODE_HOME", $null, "Machine")
+        Write-Host "  [Env] Removed legacy NODE_HOME" -ForegroundColor Yellow
+    }
+    Remove-PathEntry "%NODE_HOME%"
+    Remove-PathEntry "$base\nodejs\*"
+    Remove-PathEntry "C:\Program Files\nodejs"
+
+    # Register new env vars (Machine + current session)
+    Set-EnvVar "NVM_HOME"    $paths.Nvm
+    Set-EnvVar "NVM_SYMLINK" $paths.NodeSym
+    Add-PathVar "%NVM_HOME%"    $paths.Nvm
+    Add-PathVar "%NVM_SYMLINK%" $paths.NodeSym
+
+    # Install default Node version via nvm
+    $nvm = "$($paths.Nvm)\nvm.exe"
+    Write-Host "  [Node] nvm install $($v.Node)" -ForegroundColor White
+    & $nvm install $($v.Node) | Out-Host
+    Write-Host "  [Node] nvm use $($v.Node)" -ForegroundColor White
+    & $nvm use $($v.Node) | Out-Host
+
+    if (!(Test-Path "$($paths.NodeSym)\node.exe")) {
+        throw "Node activation failed: $($paths.NodeSym)\node.exe not found after 'nvm use'."
+    }
+    Write-Host "  [OK] Node $($v.Node) active at $($paths.NodeSym)" -ForegroundColor Green
 }
 
 $TaskPython = {
