@@ -105,6 +105,17 @@ function Add-PathVar($regVal, $physPath) {
     if (($env:Path -split ';' -notcontains $physPath)) { $env:Path += ";$physPath" }
 }
 
+function Remove-PathEntry($wildcard) {
+    $current = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $kept = $current -split ';' | Where-Object { $_ -and ($_ -notlike $wildcard) }
+    $new = ($kept -join ';')
+    if ($new -ne $current) {
+        [System.Environment]::SetEnvironmentVariable("Path", $new, "Machine")
+        Write-Host "  [Path] Removed entries matching: $wildcard" -ForegroundColor Yellow
+    }
+    $env:Path = (($env:Path -split ';' | Where-Object { $_ -and ($_ -notlike $wildcard) }) -join ';')
+}
+
 function Download-Official($url, $file, $referer = $null) {
     $target = Join-Path $tempCache $file
     if (Test-Path $target) { return $target }
