@@ -25,7 +25,7 @@ Inside the PS payload, each tool is a `$TaskXxx = { ... }` scriptblock dispatche
 1. **Skip if already on PATH** via `Test-CommandAvailable` (calls `Get-Command`). This means a tool installed system-wide outside `D:\dev_env` is left alone — only `JAVA_HOME`/`NODE_HOME`/etc. and PATH entries get added (or not, if the tool is already detected).
 2. **Skip if already installed under `$paths.Xxx`** — versioned target dirs (`D:\dev_env\java\21.0.5`, etc.) act as the idempotency check. Bumping a version in the `$v` hashtable forces a fresh install into a new directory; it does not delete the old one.
 3. **Download to `$tempCache`** (`D:\dev_env\__temp_cache__`) via `Download-Official`, which tries `Invoke-WebRequest` with a Chrome User-Agent and falls back to `curl.exe`. The cache is wiped in the `finally` block at the end of the run.
-4. **Install** — `.zip` is `Expand-Archive`'d and the inner directory moved into place; `.msi`/`.exe` is invoked silently (`/quiet`, `/VERYSILENT`) with an explicit `INSTALLDIR`/`TargetDir`/`/DIR=` so it lands inside `$paths.Xxx`.
+4. **Install** — `.zip` is `Expand-Archive`'d and `.tar.gz` is extracted with the built-in `tar.exe` (Python uses python-build-standalone, a relocatable `.tar.gz`), then the inner directory is moved into place; `.msi`/`.exe` installers (Git, TortoiseGit) are invoked silently (`/VERYSILENT`, `/quiet`) with an explicit `/DIR=`/`INSTALLDIR=` so they land inside `$paths.Xxx`.
 5. **Register env vars** — `Set-EnvVar` writes Machine scope and also `Set-Item Env:` so the *current* PowerShell session sees it (needed for tools like `sdkmanager` that run later in the same session). `Add-PathVar` appends to Machine `Path` using a `%VAR%`-style entry (e.g. `%JAVA_HOME%\bin`) but checks both the symbolic and resolved form to avoid duplicates.
 
 The Android task is the only one with cross-task ordering: `sdkmanager.bat` requires Java on PATH, so it falls back to prepending `$paths.Java\bin` to `$env:Path` for the current session, and throws if Java isn't installed yet. Preserve that check if you refactor.
@@ -36,7 +36,9 @@ After all tasks run, the script `Add-Type`s a tiny C# `Win32Helper` and calls `S
 
 ## Versions and URLs
 
-All version numbers live in the `$v` hashtable; URLs are templated from `$v` in `$urls`. To bump a tool, change `$v` only — `$paths` and `$urls` interpolate from it. Sources are deliberately official (`download.oracle.com`, `nodejs.org`, `python.org`, `archive.apache.org`, `git-for-windows` GitHub releases, `download.tortoisegit.org`, `dl.google.com`); don't swap in mirrors without a reason.
+All version numbers live in the `$v` hashtable; URLs are templated from `$v` in `$urls`. To bump a tool, change `$v` only — `$paths` and `$urls` interpolate from it. Sources are deliberately official (`download.oracle.com`, `nodejs.org`, `archive.apache.org`, `git-for-windows` and `astral-sh/python-build-standalone` GitHub releases, `download.tortoisegit.org`, `dl.google.com`); don't swap in mirrors without a reason.
+
+Python is the exception to "change `$v` only": it needs both `$v.Python` (e.g. `3.12.13`) and `$v.PythonRelease` (the python-build-standalone release tag, e.g. `20260510`) — the two are paired, since each PBS release ships specific patch versions.
 
 Note the JDK version drift: `$v.Java = "21.0.5"` in the script, but `pkg/` contains `jdk-8.zip` and `jdk-17.zip`. Those zips are **not** wired into any task and aren't tracked in git — treat them as a manual offline cache, not part of the install flow, unless you add a task that consumes them.
 

@@ -54,9 +54,9 @@ if (!(Test-Path $tempCache)) { New-Item -ItemType Directory -Path $tempCache | O
 $v = @{
     Java8   = "8";          Java17  = "17"
     Nvm     = "1.1.12";     Node    = "18.18.0"
-    Python  = "3.12.4";     Maven   = "3.9.9"
-    Git     = "2.48.1";     TGit    = "2.15.0.0"
-    Android = "11076708"
+    Python  = "3.12.13";    PythonRelease = "20260510"
+    Maven   = "3.9.9";      Git     = "2.48.1"
+    TGit    = "2.15.0.0";   Android = "11076708"
 }
 
 # Path Definitions: Name\Version
@@ -75,7 +75,7 @@ $paths = @{
 $urls = @{
     JavaBase = "https://raw.githubusercontent.com/fuck18cm/DevEnvWin11/main/pkg"
     Nvm     = "https://github.com/coreybutler/nvm-windows/releases/download/$($v.Nvm)/nvm-setup.zip"
-    Python  = "https://www.python.org/ftp/python/$($v.Python)/python-$($v.Python)-amd64.exe"
+    Python  = "https://github.com/astral-sh/python-build-standalone/releases/download/$($v.PythonRelease)/cpython-$($v.Python)+$($v.PythonRelease)-x86_64-pc-windows-msvc-install_only.tar.gz"
     Maven   = "https://archive.apache.org/dist/maven/maven-3/$($v.Maven)/binaries/apache-maven-$($v.Maven)-bin.zip"
     Git     = "https://github.com/git-for-windows/git/releases/download/v$($v.Git).windows.1/Git-$($v.Git)-64-bit.exe"
     TGit    = "https://download.tortoisegit.org/tgit/$($v.TGit)/TortoiseGit-$($v.TGit)-64bit.msi"
@@ -288,20 +288,64 @@ $TaskNode = {
 }
 
 $TaskPython = {
-    Write-Host "`n>> Python" -ForegroundColor Cyan
+    Write-Host "`n>> Python (python-build-standalone)" -ForegroundColor Cyan
 
-    if (!(Test-Path "$($paths.Python)\python.exe")) {
-        $f = Download-Official $urls.Python "python-$($v.Python).exe"
-        Start-Process $f -ArgumentList "/quiet InstallAllUsers=1 PrependPath=0 TargetDir=`"$($paths.Python)`"" -Wait
-        if (!(Test-Path "$($paths.Python)\python.exe")) { throw "Python install failed at $($paths.Python)" }
+    $pyExe = "$($paths.Python)\python.exe"
+
+    # --- Step 1: is python already in the environment? If so, skip the download/install. ---
+    if (Test-CommandAvailable "python") {
+        Write-Host "  [Skip] python already on PATH: $((Get-Command python).Source)" -ForegroundColor Yellow
     } else {
-        Write-Host "  [Skip] Python $($v.Python) already at $($paths.Python)" -ForegroundColor Yellow
+        # Not in the environment - download python-build-standalone and extract it like
+        # Java/Maven: a self-contained, relocatable CPython .tar.gz, no MSI, no registry.
+        $f = Download-Official $urls.Python "python-$($v.Python).tar.gz"
+
+        $extractDir = Join-Path $tempCache "python_extract"
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+        New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+
+        # Windows 11 ships bsdtar as tar.exe, which handles .tar.gz directly.
+        & tar.exe -xf $f -C $extractDir
+        if ($LASTEXITCODE -ne 0) { throw "tar extraction failed for $f (exit=$LASTEXITCODE)" }
+
+        # install_only archives extract to an inner "python\" directory.
+        $inner = Join-Path $extractDir "python"
+        if (!(Test-Path "$inner\python.exe")) { throw "Unexpected archive layout: python.exe not under $inner" }
+
+        New-Item -ItemType Directory -Path (Split-Path $paths.Python) -Force | Out-Null
+        if (Test-Path $paths.Python) { Remove-Item $paths.Python -Recurse -Force }
+        Move-Item $inner $paths.Python -Force
+        if (!(Test-Path $pyExe)) { throw "Python install failed at $($paths.Python)" }
+        Write-Host "  [Install] Python $($v.Python) -> $($paths.Python)" -ForegroundColor Green
+
+        # PBS bundles pip as a module but ships no Scripts\pip.exe wrapper. Force-reinstall
+        # pip once so `pip` works as a bare command. Non-fatal: `python -m pip` is the fallback.
+        Write-Host "  [pip] Bootstrapping pip console scripts ..." -ForegroundColor White
+        try {
+            & $pyExe -m pip install --force-reinstall --no-warn-script-location pip | Out-Host
+            if (Test-Path "$($paths.Python)\Scripts\pip.exe") {
+                Write-Host "  [pip] Scripts\pip.exe ready" -ForegroundColor Green
+            } else {
+                Write-Host "  [pip] pip.exe not created - use 'python -m pip' instead" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "  [pip] pip bootstrap skipped ($($_.Exception.Message)) - 'python -m pip' still works" -ForegroundColor Yellow
+        }
     }
 
-    # Env vars + PATH re-applied every run so a partial previous install can self-heal
-    Set-EnvVar "PYTHON_HOME" $paths.Python
-    Add-PathVar "%PYTHON_HOME%" $paths.Python
-    Add-PathVar "%PYTHON_HOME%\Scripts" "$($paths.Python)\Scripts"
+    # --- Step 2: make sure PYTHON_HOME and its two PATH entries are registered. ---
+    # Add-PathVar is idempotent: an entry already on PATH is skipped, a missing one is
+    # appended. On Windows python.exe sits in the ROOT of PYTHON_HOME (no \bin like the
+    # JDK), so PATH gets %PYTHON_HOME% itself plus %PYTHON_HOME%\Scripts for pip.
+    # Guarded on the managed dir actually existing - otherwise we would leave PYTHON_HOME
+    # pointing at a directory that does not exist (the exact mess this rewrite fixes).
+    if (Test-Path $pyExe) {
+        Set-EnvVar "PYTHON_HOME" $paths.Python
+        Add-PathVar "%PYTHON_HOME%" $paths.Python
+        Add-PathVar "%PYTHON_HOME%\Scripts" "$($paths.Python)\Scripts"
+    } else {
+        Write-Host "  [Skip] no dev_env-managed Python at $($paths.Python) - PYTHON_HOME left untouched" -ForegroundColor Yellow
+    }
 }
 
 $TaskMaven = {
