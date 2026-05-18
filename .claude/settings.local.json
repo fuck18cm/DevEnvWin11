@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(not exist *)"
+      "Bash(not exist *)",
+      "Skill(superpowers:systematic-debugging)",
+      "Read(//d/dev_env/**)",
+      "Read(//c/Users/hbslo/AppData/Local/Python/**)",
+      "Read(//c/Users/hbslo/AppData/Local/Python/bin/**)"
     ]
   }
 }
