@@ -57,6 +57,7 @@ $v = @{
     Python  = "3.12.13";    PythonRelease = "20260510"
     Maven   = "3.9.9";      Git     = "2.48.1"
     TGit    = "2.15.0.0";   Android = "11076708"
+    Apktool = "3.0.2";      BuildTools = "35.0.0"
 }
 
 # Path Definitions: Name\Version
@@ -70,6 +71,8 @@ $paths = @{
     Git     = "$base\git\$($v.Git)"
     TGit    = "$base\TortoiseGit\$($v.TGit)"
     Android = "$base\android_sdk"
+    Apktool    = "$base\apktool\$($v.Apktool)"
+    BuildTools = "$base\android_sdk\build-tools\$($v.BuildTools)"
 }
 
 $urls = @{
@@ -81,6 +84,8 @@ $urls = @{
     TGit    = "https://download.tortoisegit.org/tgit/$($v.TGit)/TortoiseGit-$($v.TGit)-64bit.msi"
     TGitLang = "https://download.tortoisegit.org/tgit/$($v.TGit)/TortoiseGit-LanguagePack-$($v.TGit)-64bit-zh_CN.msi"
     Android = "https://dl.google.com/android/repository/commandlinetools-win-$($v.Android)_latest.zip"
+    ApktoolJar = "https://github.com/iBotPeaches/Apktool/releases/download/v$($v.Apktool)/apktool_$($v.Apktool).jar"
+    ApktoolBat = "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/windows/apktool.bat"
 }
 
 # --- Helper Functions ---
@@ -147,6 +152,36 @@ function Merge-SplitFiles($parts, $outPath) {
             try { $in.CopyTo($out) } finally { $in.Close() }
         }
     } finally { $out.Close() }
+}
+
+function Ensure-AndroidCmdlineTools {
+    # Ensures android_sdk\cmdline-tools\latest exists; returns the sdkmanager.bat path.
+    # Does NOT check for Java - callers run Ensure-JavaOnPath only when they actually
+    # need to invoke sdkmanager (not on the skip path).
+    $lat = "$($paths.Android)\cmdline-tools\latest"
+    if (!(Test-Path $lat)) {
+        $f = Download-Official $urls.Android "sdk.zip"
+        Expand-Archive $f -DestinationPath "$tempCache\sdk" -Force
+        New-Item -ItemType Directory -Path $lat -Force | Out-Null
+        Copy-Item "$tempCache\sdk\cmdline-tools\*" $lat -Recurse -Force
+    }
+    $sdk = Join-Path $lat "bin\sdkmanager.bat"
+    if (!(Test-Path $sdk)) { throw "sdkmanager.bat not found at $sdk" }
+    return $sdk
+}
+
+function Ensure-JavaOnPath {
+    # sdkmanager requires Java on PATH for the current process. Fall back to the
+    # bundled JDKs (prefer 8, then 17); throw if neither is installed.
+    if (-not (Test-CommandAvailable "java")) {
+        if (Test-Path "$($paths.Java8)\bin\java.exe") {
+            $env:Path = "$($paths.Java8)\bin;$env:Path"
+        } elseif (Test-Path "$($paths.Java17)\bin\java.exe") {
+            $env:Path = "$($paths.Java17)\bin;$env:Path"
+        } else {
+            throw "Java not found. Install Java (option 1) first."
+        }
+    }
 }
 
 # --- Task Functions ---
@@ -401,17 +436,10 @@ $TaskAndroid = {
     Write-Host "`n>> Android SDK" -ForegroundColor Cyan
 
     $adb = "$($paths.Android)\platform-tools\adb.exe"
-    $lat = "$($paths.Android)\cmdline-tools\latest"
-
-    if (!(Test-Path $lat)) {
-        $f = Download-Official $urls.Android "sdk.zip"
-        Expand-Archive $f -DestinationPath "$tempCache\sdk" -Force
-        New-Item -ItemType Directory -Path $lat -Force | Out-Null
-        Copy-Item "$tempCache\sdk\cmdline-tools\*" $lat -Recurse -Force
-    }
+    $sdk = Ensure-AndroidCmdlineTools
 
     Set-EnvVar "ANDROID_HOME" $paths.Android
-    Add-PathVar "%ANDROID_HOME%\cmdline-tools\latest\bin" "$lat\bin"
+    Add-PathVar "%ANDROID_HOME%\cmdline-tools\latest\bin" "$($paths.Android)\cmdline-tools\latest\bin"
     Add-PathVar "%ANDROID_HOME%\platform-tools" "$($paths.Android)\platform-tools"
 
     if (Test-Path $adb) {
@@ -419,19 +447,7 @@ $TaskAndroid = {
         return
     }
 
-    $sdk = Join-Path $lat "bin\sdkmanager.bat"
-    if (!(Test-Path $sdk)) { throw "sdkmanager.bat not found at $sdk" }
-
-    # sdkmanager requires Java on PATH for the current process
-    if (-not (Test-CommandAvailable "java")) {
-        if (Test-Path "$($paths.Java8)\bin\java.exe") {
-            $env:Path = "$($paths.Java8)\bin;$env:Path"
-        } elseif (Test-Path "$($paths.Java17)\bin\java.exe") {
-            $env:Path = "$($paths.Java17)\bin;$env:Path"
-        } else {
-            throw "Java not found. Install Java (option 1) first, then re-run option 6."
-        }
-    }
+    Ensure-JavaOnPath
 
     Write-Host "  [SDK] Accepting licenses..." -ForegroundColor White
     cmd /c "(for /l %i in (1,1,30) do @echo y) | `"$sdk`" --sdk_root=`"$($paths.Android)`" --licenses" | Out-Null
@@ -443,17 +459,73 @@ $TaskAndroid = {
     Write-Host "  [SDK] adb installed at $adb" -ForegroundColor Green
 }
 
+$TaskApktool = {
+    Write-Host "`n>> apktool" -ForegroundColor Cyan
+
+    $apkJar = "$($paths.Apktool)\apktool_$($v.Apktool).jar"
+    $apkBat = "$($paths.Apktool)\apktool.bat"
+
+    if (Test-Path $apkJar) {
+        Write-Host "  [Skip] apktool $($v.Apktool) already at $($paths.Apktool)" -ForegroundColor Yellow
+    } else {
+        New-Item -ItemType Directory -Path $paths.Apktool -Force | Out-Null
+        $jar = Download-Official $urls.ApktoolJar "apktool_$($v.Apktool).jar"
+        Copy-Item $jar $apkJar -Force
+        $bat = Download-Official $urls.ApktoolBat "apktool.bat"
+        Copy-Item $bat $apkBat -Force
+        if (!(Test-Path $apkJar)) { throw "apktool install failed at $($paths.Apktool)" }
+        Write-Host "  [Install] apktool $($v.Apktool) -> $($paths.Apktool)" -ForegroundColor Green
+    }
+
+    Set-EnvVar "APKTOOL_HOME" $paths.Apktool
+    Add-PathVar "%APKTOOL_HOME%" $paths.Apktool
+
+    # apktool 3.x needs Java 11+; this repo defaults JAVA_HOME to JDK 8
+    $jh = [System.Environment]::GetEnvironmentVariable("JAVA_HOME", "Machine")
+    if ($jh -eq $paths.Java8) {
+        Write-Host "  [Note] apktool $($v.Apktool) needs Java 11+, but JAVA_HOME is JDK 8. Run: switch_jdk.bat 17" -ForegroundColor Yellow
+    } else {
+        Write-Host "  [Note] apktool $($v.Apktool) requires Java 11+ on PATH." -ForegroundColor Yellow
+    }
+}
+
+$TaskZipalign = {
+    Write-Host "`n>> zipalign (Android build-tools $($v.BuildTools))" -ForegroundColor Cyan
+
+    $zipalign = "$($paths.BuildTools)\zipalign.exe"
+    $sdk = Ensure-AndroidCmdlineTools
+
+    Set-EnvVar "ANDROID_HOME" $paths.Android
+    Add-PathVar "%ANDROID_HOME%\build-tools\$($v.BuildTools)" $paths.BuildTools
+
+    if (Test-Path $zipalign) {
+        Write-Host "  [Skip] zipalign already at $($paths.BuildTools)" -ForegroundColor Yellow
+        return
+    }
+
+    Ensure-JavaOnPath
+
+    Write-Host "  [SDK] Accepting licenses..." -ForegroundColor White
+    cmd /c "(for /l %i in (1,1,30) do @echo y) | `"$sdk`" --sdk_root=`"$($paths.Android)`" --licenses" | Out-Null
+
+    Write-Host "  [SDK] Installing build-tools;$($v.BuildTools)..." -ForegroundColor White
+    cmd /c "echo y | `"$sdk`" --sdk_root=`"$($paths.Android)`" `"build-tools;$($v.BuildTools)`""
+
+    if (!(Test-Path $zipalign)) { throw "build-tools install failed; zipalign.exe not found at $zipalign" }
+    Write-Host "  [SDK] zipalign installed at $zipalign" -ForegroundColor Green
+}
+
 # --- Execution ---
 
 Clear-Host
 Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host "      Smart Dev Environment Installer" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
-Write-Host " 1. Java(8+17) | 2. Node | 3. Python | 4. Maven | 5. Git | 6. Android | all. All"
+Write-Host " 1. Java(8+17) | 2. Node | 3. Python | 4. Maven | 5. Git | 6. Android | 7. apktool | 8. zipalign | all. All"
 $choice = Read-Host "`nChoice"
 if ($choice -eq "") { exit }
 
-$selected = if ($choice -eq "all") { @("1","2","3","4","5","6") } else { $choice -split "," }
+$selected = if ($choice -eq "all") { @("1","2","3","4","5","6","7","8") } else { $choice -split "," }
 
 try {
     foreach ($item in $selected) {
@@ -467,6 +539,8 @@ try {
             "4" { & $TaskMaven }
             "5" { & $TaskGit }
             "6" { & $TaskAndroid }
+            "7" { & $TaskApktool }
+            "8" { & $TaskZipalign }
         }
     }
     
