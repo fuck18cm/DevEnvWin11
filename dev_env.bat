@@ -184,6 +184,140 @@ function Ensure-JavaOnPath {
     }
 }
 
+function Get-DevEnvTaskPath {
+    $parts = @()
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    if ($machine) { $parts += ($machine -split ';' | Where-Object { $_ }) }
+
+    foreach ($pair in @(
+        @{ Var = "NVM_HOME";    Sub = "" },
+        @{ Var = "NVM_SYMLINK"; Sub = "" },
+        @{ Var = "USERPROFILE"; Sub = ".local\bin" }
+    )) {
+        $root = [Environment]::GetEnvironmentVariable($pair.Var, "Machine")
+        if (-not $root -and $pair.Var -eq "USERPROFILE") { $root = $env:USERPROFILE }
+        if ($root) {
+            $p = if ($pair.Sub) { Join-Path $root $pair.Sub } else { $root }
+            if (Test-Path $p) { $parts += $p }
+        }
+    }
+
+    $npmGlobal = Join-Path $env:APPDATA "npm"
+    if (Test-Path $npmGlobal) { $parts += $npmGlobal }
+
+    $nodeDir = "D:\dev_env\nodejs"
+    if (Test-Path $nodeDir) { $parts += $nodeDir }
+
+    ($parts | Select-Object -Unique) -join ';'
+}
+
+function Remove-ObsoleteWslKeepaliveTasks {
+    foreach ($old in @('DevEnvUbuntu-WSL-VMHolder', 'DevEnvUbuntu-WSL-Keepalive')) {
+        $t = Get-ScheduledTask -TaskName $old -ErrorAction SilentlyContinue
+        if ($t) {
+            Unregister-ScheduledTask -TaskName $old -Confirm:$false
+            Write-Host "  [Migrate] Removed obsolete task: $old" -ForegroundColor Yellow
+        }
+    }
+}
+
+function Write-ClautelWatchArtifacts {
+    $dir = Join-Path $env:LOCALAPPDATA "DevEnvWin11"
+    if (!(Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+    $watchPs1 = Join-Path $dir "clautel-watch.ps1"
+    $launchVbs = Join-Path $dir "clautel-watch-launch.vbs"
+    $taskPath = Get-DevEnvTaskPath
+
+    $watchContent = @'
+$ErrorActionPreference = "Stop"
+$logFile = Join-Path (Join-Path $env:LOCALAPPDATA "DevEnvWin11") "clautel-watch.log"
+function Append-ClautelLog([string]$msg) {
+    $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg
+    Add-Content -Path $logFile -Value $line -Encoding UTF8
+    if ((Get-Item $logFile).Length -gt 524288) {
+        $tail = Get-Content $logFile -Tail 4096
+        Set-Content -Path $logFile -Value $tail -Encoding UTF8
+    }
+}
+$mutexName = "Global\DevEnvWin11-Clautel-Watch"
+$created = $false
+$mtx = New-Object System.Threading.Mutex($false, $mutexName, [ref]$created)
+if (-not $created) { exit 0 }
+try {
+    $cfg = Join-Path $env:USERPROFILE ".clautel\config.json"
+    if (-not (Test-Path $cfg)) {
+        Append-ClautelLog "[SKIP] clautel not configured; run clautel setup"
+        exit 0
+    }
+    $env:PATH = "TASK_PATH_PLACEHOLDER"
+    $st = & clautel status 2>&1 | Out-String
+    if ($st -match 'running') {
+        Append-ClautelLog "[OK] already running"
+        exit 0
+    }
+    $npmRoot = (& npm root -g 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "npm root -g failed: $npmRoot" }
+    $cliJs = Join-Path $npmRoot "clautel\dist\cli.js"
+    if (-not (Test-Path $cliJs)) { throw "clautel cli not found at $cliJs" }
+    $nodeExe = Join-Path (Split-Path (Get-Command node).Source -Parent) "node.exe"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $nodeExe
+    $psi.Arguments = "`"$cliJs`" start"
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $null = [System.Diagnostics.Process]::Start($psi)
+    Append-ClautelLog "[START] clautel daemon (hidden node)"
+} catch {
+    Append-ClautelLog "[ERR] $($_.Exception.Message)"
+    exit 0
+} finally {
+    $mtx.ReleaseMutex() | Out-Null
+}
+'@
+    $watchContent = $watchContent.Replace('TASK_PATH_PLACEHOLDER', $taskPath)
+    Set-Content -Path $watchPs1 -Value $watchContent -Encoding ASCII
+
+    $vbsPs1 = $watchPs1.Replace('\', '\\')
+    $vbsContent = @"
+' DevEnvWin11 clautel watch launcher (no console flash)
+ps1 = "$vbsPs1"
+cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & ps1 & """"
+CreateObject("WScript.Shell").Run cmd, 0, False
+"@
+    Set-Content -Path $launchVbs -Value $vbsContent -Encoding ASCII
+    Write-Host "  [Keepalive] Wrote $watchPs1" -ForegroundColor Green
+    Write-Host "  [Keepalive] Wrote $launchVbs" -ForegroundColor Green
+}
+
+function Ensure-ClautelKeepaliveTask {
+    $taskName = "DevEnvWin11-Clautel-Keepalive"
+    $dir = Join-Path $env:LOCALAPPDATA "DevEnvWin11"
+    $launchVbs = Join-Path $dir "clautel-watch-launch.vbs"
+    if (!(Test-Path $launchVbs)) { throw "Missing $launchVbs; call Write-ClautelWatchArtifacts first" }
+
+    $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
+    $action = New-ScheduledTaskAction -Execute $wscript -Argument "//B //Nologo `"$launchVbs`""
+
+    $triggerBoot = New-ScheduledTaskTrigger -AtStartup
+    # Omit RepetitionDuration: [TimeSpan]::MaxValue breaks Register-ScheduledTask on Win11 (P99999999DT...).
+    $triggerRepeat = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(2)) `
+        -RepetitionInterval (New-TimeSpan -Minutes 5)
+
+    $principalName = "$env:USERDOMAIN\$env:USERNAME"
+    $principal = New-ScheduledTaskPrincipal -UserId $principalName -LogonType S4U -RunLevel Limited
+
+    $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($triggerBoot, $triggerRepeat) `
+        -Principal $principal -Settings $settings | Out-Null
+    Write-Host "  [Keepalive] Registered: $taskName (AtStartup + 5m, S4U, Hidden)" -ForegroundColor Green
+}
+
 # --- Task Functions ---
 
 $TaskJava = {
@@ -515,13 +649,44 @@ $TaskZipalign = {
     Write-Host "  [SDK] zipalign installed at $zipalign" -ForegroundColor Green
 }
 
+$TaskClautel = {
+    Write-Host "`n>> clautel (npm latest + keepalive)" -ForegroundColor Cyan
+
+    if (-not (Test-CommandAvailable "node")) {
+        throw "Node.js required. Install menu 2 (Node) first."
+    }
+    if (-not (Test-CommandAvailable "npm")) {
+        throw "npm required. Install menu 2 (Node) first."
+    }
+    if (-not (Test-CommandAvailable "claude")) {
+        throw "Claude Code CLI (claude) required. Install from https://code.claude.com/docs/en/setup"
+    }
+
+    Write-Host "  [npm] install -g clautel@latest ..." -ForegroundColor White
+    & npm install -g clautel@latest
+    if ($LASTEXITCODE -ne 0) { throw "npm install -g clautel@latest failed (exit $LASTEXITCODE)" }
+
+    $ver = (& clautel --version 2>&1 | Out-String).Trim()
+    Write-Host "  [OK] clautel $ver" -ForegroundColor Green
+
+    Remove-ObsoleteWslKeepaliveTasks
+    Write-ClautelWatchArtifacts
+    Ensure-ClautelKeepaliveTask
+
+    $cfg = Join-Path $env:USERPROFILE ".clautel\config.json"
+    if (!(Test-Path $cfg)) {
+        Write-Host "  [Next] Run: clautel setup" -ForegroundColor Yellow
+        Write-Host "  [Next] Then: clautel activate <license-key>" -ForegroundColor Yellow
+    }
+}
+
 # --- Execution ---
 
 Clear-Host
 Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host "      Smart Dev Environment Installer" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
-Write-Host " 1. Java(8+17) | 2. Node | 3. Python | 4. Maven | 5. Git | 6. Android | 7. apktool | 8. zipalign | all. All"
+Write-Host " 1. Java(8+17) | 2. Node | 3. Python | 4. Maven | 5. Git | 6. Android | 7. apktool | 8. zipalign | 9. clautel | all. All (1-8; add ,9 for clautel)"
 $choice = Read-Host "`nChoice"
 if ($choice -eq "") { exit }
 
@@ -541,6 +706,7 @@ try {
             "6" { & $TaskAndroid }
             "7" { & $TaskApktool }
             "8" { & $TaskZipalign }
+            "9" { & $TaskClautel }
         }
     }
     
