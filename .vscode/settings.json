@@ -1,4 +1,11 @@
 {
-    "workbench.colorTheme": "Light Modern",
-    "workbench.preferredDarkColorTheme": "Monokai"
+    "workbench.colorTheme": "Solarized Light",
+    "workbench.preferredDarkColorTheme": "Default Light+",
+    "workbench.preferredHighContrastLightColorTheme": "Default Light+",
+    "workbench.preferredHighContrastColorTheme": "Default Light+",
+    "workbench.colorCustomizations": {
+        "editorCursor.foreground": "#42A5F5",
+        "terminalCursor.foreground": "#42A5F5"
+    },
+    "workbench.activityBar.iconClickBehavior": "toggle"
 }
